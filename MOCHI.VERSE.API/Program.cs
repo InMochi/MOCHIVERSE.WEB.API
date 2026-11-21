@@ -209,9 +209,9 @@ builder.Services.AddRateLimiter(options =>
 });
 
 builder.Services.AddHttpClient<TmdbTitleProvider>();
-builder.Services.AddHttpClient<JikanTitleProvider>();
+builder.Services.AddHttpClient<AniListTitleProvider>();
 builder.Services.AddTransient<ITitleProvider>(sp => sp.GetRequiredService<TmdbTitleProvider>());
-builder.Services.AddTransient<ITitleProvider>(sp => sp.GetRequiredService<JikanTitleProvider>());
+builder.Services.AddTransient<ITitleProvider>(sp => sp.GetRequiredService<AniListTitleProvider>());
 
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<ITitleCacheRepository, TitleCacheRepository>();

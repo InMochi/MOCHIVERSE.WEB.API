@@ -189,7 +189,7 @@ public sealed class TitleService
         var normalizedSource = source.Trim().ToLowerInvariant();
         if (!_providers.ContainsKey(normalizedSource))
         {
-            throw new ArgumentException("Unsupported source. Allowed values: 'tmdb', 'jikan'.", nameof(source));
+            throw new ArgumentException("Unsupported source. Allowed values: 'tmdb', 'anilist'.", nameof(source));
         }
 
         if (!int.TryParse(externalId, out var numericId) || numericId <= 0)
@@ -206,7 +206,7 @@ public sealed class TitleService
         {
             "all" => _providers.Values.ToList(),
             "movie" => [_providers["tmdb"]],
-            "anime" => [_providers["jikan"]],
+            "anime" => [_providers["anilist"]],
             _ => throw new ArgumentException("Invalid type. Allowed values: 'movie', 'anime'.", nameof(normalizedType))
         };
     }
