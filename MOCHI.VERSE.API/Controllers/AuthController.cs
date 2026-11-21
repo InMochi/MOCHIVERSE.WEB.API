@@ -1,7 +1,9 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Data.SqlClient;
+using Microsoft.IdentityModel.JsonWebTokens;
 using MOCHI.VERSE.API.Class;
 using MOCHI.VERSE.API.Interfaces;
 using MOCHI.VERSE.API.Models;
@@ -115,6 +117,36 @@ public sealed class AuthController : ControllerBase
         catch (SqlException ex)
         {
             _logger.LogError(ex, "Database error during login.");
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                Master.CreateAPIResponse(false, "An unexpected error occurred."));
+        }
+    }
+
+    [HttpPost("logout")]
+    [Authorize]
+    public async Task<ActionResult<APIResponse>> Logout(CancellationToken cancellationToken)
+    {
+        Response.Headers.CacheControl = "no-store";
+
+        var userId = Master.GetUserId(User);
+        var jti = User.FindFirstValue(JwtRegisteredClaimNames.Jti);
+        var expClaim = User.FindFirstValue(JwtRegisteredClaimNames.Exp);
+
+        if (userId is null || string.IsNullOrWhiteSpace(jti) || !long.TryParse(expClaim, out var expSeconds))
+        {
+            return Unauthorized(Master.CreateAPIResponse(false, "Invalid token."));
+        }
+
+        var expiresAt = DateTimeOffset.FromUnixTimeSeconds(expSeconds).UtcDateTime;
+
+        try
+        {
+            await _userRepository.RevokeTokenAsync(jti, userId.Value, expiresAt, cancellationToken);
+            return Ok(Master.CreateAPIResponse(true, "Logged out successfully."));
+        }
+        catch (SqlException ex)
+        {
+            _logger.LogError(ex, "Database error during logout.");
             return StatusCode(StatusCodes.Status500InternalServerError,
                 Master.CreateAPIResponse(false, "An unexpected error occurred."));
         }
