@@ -11,6 +11,11 @@ public sealed class SqlHelper : IDisposable, IAsyncDisposable
     private readonly SqlConnection _connection;
     private readonly SqlCommand _command;
 
+    public enum ConnectionType
+    {
+        DefaultConnection
+    }
+
     public SqlTransaction? Transaction { get; private set; }
 
     public string CommandText
@@ -31,7 +36,14 @@ public sealed class SqlHelper : IDisposable, IAsyncDisposable
         set => _command.CommandTimeout = value;
     }
 
-    public SqlHelper(IConfiguration configuration, string connectionName = "DefaultConnection")
+    public SqlHelper(
+        IConfiguration configuration,
+        ConnectionType connectionType = ConnectionType.DefaultConnection)
+        : this(configuration, connectionType.ToString())
+    {
+    }
+
+    public SqlHelper(IConfiguration configuration, string connectionName)
         : this(ResolveConnectionString(configuration, connectionName))
     {
     }
