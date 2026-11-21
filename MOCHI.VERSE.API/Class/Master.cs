@@ -1,9 +1,11 @@
+using System.Security.Claims;
+using Microsoft.IdentityModel.JsonWebTokens;
 using MOCHI.VERSE.API.Models;
 
 namespace MOCHI.VERSE.API.Class;
 
 /// <summary>
-/// Shared API response factory.
+/// Shared API response and claims helpers.
 /// </summary>
 public static class Master
 {
@@ -14,4 +16,12 @@ public static class Master
             Message = message,
             Data = data
         };
+
+    public static int? GetUserId(ClaimsPrincipal user)
+    {
+        var sub = user.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                  ?? user.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        return int.TryParse(sub, out var userId) && userId > 0 ? userId : null;
+    }
 }

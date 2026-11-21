@@ -98,6 +98,8 @@ builder.Services.AddTransient<ITitleProvider>(sp => sp.GetRequiredService<JikanT
 
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<ITitleCacheRepository, TitleCacheRepository>();
+builder.Services.AddScoped<IRatingRepository, RatingRepository>();
+builder.Services.AddScoped<IWatchlistRepository, WatchlistRepository>();
 builder.Services.AddScoped<TitleService>();
 builder.Services.AddSingleton<Hasher>();
 builder.Services.AddSingleton<AuthHelper>();

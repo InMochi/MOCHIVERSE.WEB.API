@@ -1,9 +1,7 @@
-using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Data.SqlClient;
-using Microsoft.IdentityModel.JsonWebTokens;
 using MOCHI.VERSE.API.Class;
 using MOCHI.VERSE.API.Interfaces;
 using MOCHI.VERSE.API.Models;
@@ -128,17 +126,15 @@ public sealed class AuthController : ControllerBase
     {
         Response.Headers.CacheControl = "no-store";
 
-        var sub = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
-                  ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
-
-        if (!int.TryParse(sub, out var userId))
+        var userId = Master.GetUserId(User);
+        if (userId is null)
         {
             return Unauthorized(Master.CreateAPIResponse(false, "Invalid token."));
         }
 
         try
         {
-            var user = await _userRepository.GetByIdAsync(userId, cancellationToken);
+            var user = await _userRepository.GetByIdAsync(userId.Value, cancellationToken);
             if (user is null || !user.IsActive)
             {
                 return Unauthorized(Master.CreateAPIResponse(false, "Unauthorized."));

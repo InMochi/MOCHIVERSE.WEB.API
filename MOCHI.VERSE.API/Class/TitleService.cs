@@ -116,18 +116,8 @@ public sealed class TitleService
         string externalId,
         CancellationToken cancellationToken = default)
     {
-        var normalizedSource = source.Trim().ToLowerInvariant();
-        if (!_providers.TryGetValue(normalizedSource, out var provider))
-        {
-            throw new ArgumentException("Unsupported source. Allowed values: 'tmdb', 'jikan'.", nameof(source));
-        }
-
-        if (!int.TryParse(externalId, out var numericId) || numericId <= 0)
-        {
-            throw new ArgumentException("ExternalId must be a positive integer.", nameof(externalId));
-        }
-
-        var normalizedId = numericId.ToString();
+        var (normalizedSource, normalizedId) = ValidateTitleKey(source, externalId);
+        var provider = _providers[normalizedSource];
         var memoryKey = $"titles:detail:{normalizedSource}:{normalizedId}";
 
         if (_memoryCache.TryGetValue(memoryKey, out TitleMetadata? inMemory) && inMemory is not null)
@@ -161,6 +151,22 @@ public sealed class TitleService
             _memoryCache.Set(memoryKey, dbCached, DetailMemoryCacheTtl);
             return dbCached;
         }
+    }
+
+    public (string Source, string ExternalId) ValidateTitleKey(string source, string externalId)
+    {
+        var normalizedSource = source.Trim().ToLowerInvariant();
+        if (!_providers.ContainsKey(normalizedSource))
+        {
+            throw new ArgumentException("Unsupported source. Allowed values: 'tmdb', 'jikan'.", nameof(source));
+        }
+
+        if (!int.TryParse(externalId, out var numericId) || numericId <= 0)
+        {
+            throw new ArgumentException("ExternalId must be a positive integer.", nameof(externalId));
+        }
+
+        return (normalizedSource, numericId.ToString());
     }
 
     private List<ITitleProvider> SelectProvidersForType(string normalizedType)
