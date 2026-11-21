@@ -59,11 +59,7 @@ public sealed class UserRepository : IUserRepository
         return Convert.ToInt32(result) == 1;
     }
 
-    public async Task<User> CreateAsync(
-        string username,
-        string email,
-        string passwordHash,
-        string role,
+    public async Task<User> CreateAsync(string username, string email, string passwordHash, string role,    
         CancellationToken cancellationToken = default)
     {
         await using var db = new SqlHelper(_configuration);
