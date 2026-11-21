@@ -1,6 +1,5 @@
 using System.Security.Claims;
 using System.Text;
-using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using MOCHI.VERSE.API.Models;
@@ -8,31 +7,42 @@ using MOCHI.VERSE.API.Models;
 namespace MOCHI.VERSE.API.Class;
 
 /// <summary>
-/// Generates signed HS256 JWT access tokens.
+/// Generates signed HS256 JWT access tokens from configuration.
 /// </summary>
 public sealed class AuthHelper
 {
-    private readonly JwtOptions _options;
+    private readonly string _issuer;
+    private readonly string _audience;
+    private readonly int _expiresMinutes;
     private readonly SigningCredentials _signingCredentials;
     private readonly JsonWebTokenHandler _tokenHandler = new();
 
-    public AuthHelper(IOptions<JwtOptions> options)
+    public AuthHelper(IConfiguration configuration)
     {
-        _options = options.Value;
-        var keyBytes = Encoding.UTF8.GetBytes(_options.Key);
-        if (keyBytes.Length < 32)
+        var issuer = configuration["Jwt:Issuer"];
+        var audience = configuration["Jwt:Audience"];
+        var key = configuration["Jwt:Key"];
+
+        if (string.IsNullOrWhiteSpace(issuer) ||
+            string.IsNullOrWhiteSpace(audience) ||
+            string.IsNullOrWhiteSpace(key) ||
+            Encoding.UTF8.GetByteCount(key) < 32)
         {
-            throw new InvalidOperationException("Jwt:Key must be at least 32 bytes.");
+            throw new InvalidOperationException("Jwt configuration (Issuer, Audience, and Key >= 32 bytes) must be set.");
         }
 
-        var securityKey = new SymmetricSecurityKey(keyBytes);
+        _issuer = issuer;
+        _audience = audience;
+        _expiresMinutes = int.TryParse(configuration["Jwt:ExpiresMinutes"], out var mins) && mins > 0 ? mins : 60;
+
+        var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
         _signingCredentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
     }
 
     public (string Token, DateTime ExpiresAt) GenerateToken(User user)
     {
         var now = DateTime.UtcNow;
-        var expiresAt = now.AddMinutes(_options.ExpiresMinutes);
+        var expiresAt = now.AddMinutes(_expiresMinutes);
 
         var claims = new Dictionary<string, object>
         {
@@ -45,8 +55,8 @@ public sealed class AuthHelper
 
         var descriptor = new SecurityTokenDescriptor
         {
-            Issuer = _options.Issuer,
-            Audience = _options.Audience,
+            Issuer = _issuer,
+            Audience = _audience,
             Claims = claims,
             IssuedAt = now,
             NotBefore = now,
@@ -54,7 +64,6 @@ public sealed class AuthHelper
             SigningCredentials = _signingCredentials
         };
 
-        var token = _tokenHandler.CreateToken(descriptor);
-        return (token, expiresAt);
+        return (_tokenHandler.CreateToken(descriptor), expiresAt);
     }
 }

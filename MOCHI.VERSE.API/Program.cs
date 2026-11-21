@@ -1,12 +1,11 @@
+using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using MOCHI.VERSE.API.Class;
 using MOCHI.VERSE.API.Interfaces;
-using MOCHI.VERSE.API.Models;
 using MOCHI.VERSE.API.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -14,17 +13,9 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
-builder.Services
-    .AddOptions<JwtOptions>()
-    .BindConfiguration(JwtOptions.SectionName)
-    .ValidateDataAnnotations()
-    .Validate(options => Encoding.UTF8.GetByteCount(options.Key) >= 32, "Jwt:Key must be at least 32 bytes.")
-    .ValidateOnStart();
-
-var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
-var jwtIssuer = jwtSection["Issuer"];
-var jwtAudience = jwtSection["Audience"];
-var jwtKey = jwtSection["Key"];
+var jwtIssuer = builder.Configuration["Jwt:Issuer"];
+var jwtAudience = builder.Configuration["Jwt:Audience"];
+var jwtKey = builder.Configuration["Jwt:Key"];
 
 if (string.IsNullOrWhiteSpace(jwtIssuer) ||
     string.IsNullOrWhiteSpace(jwtAudience) ||
@@ -50,8 +41,19 @@ builder.Services
             ValidAlgorithms = [SecurityAlgorithms.HmacSha256],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
             NameClaimType = JwtRegisteredClaimNames.UniqueName,
-            RoleClaimType = System.Security.Claims.ClaimTypes.Role,
+            RoleClaimType = ClaimTypes.Role,
             ClockSkew = TimeSpan.FromSeconds(30)
+        };
+        options.Events = new JwtBearerEvents
+        {
+            OnChallenge = async context =>
+            {
+                context.HandleResponse();
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.Headers.CacheControl = "no-store";
+                await context.Response.WriteAsJsonAsync(
+                    Master.CreateAPIResponse(false, "Authorization denied. Login again to renew session."));
+            }
         };
     });
 

@@ -34,7 +34,7 @@ public sealed class AuthController : ControllerBase
     [HttpPost("register")]
     [AllowAnonymous]
     [EnableRateLimiting("auth")]
-    public async Task<ActionResult<ApiResponse<AuthResponse>>> Register(
+    public async Task<ActionResult<APIResponse>> Register(
         [FromBody] RegisterRequest request,
         CancellationToken cancellationToken)
     {
@@ -47,33 +47,38 @@ public sealed class AuthController : ControllerBase
         {
             if (await _userRepository.ExistsAsync(username, email, cancellationToken))
             {
-                return Conflict(ApiResponse<AuthResponse>.Fail("Username or email is already registered."));
+                return Conflict(Master.CreateAPIResponse(false, "Username or email is already registered."));
             }
 
             var passwordHash = await _hasher.HashPasswordAsync(request.Password);
             var user = await _userRepository.CreateAsync(username, email, passwordHash, "User", cancellationToken);
 
             var (token, expiresAt) = _authHelper.GenerateToken(user);
-            var payload = new AuthResponse(token, expiresAt, ToProfile(user));
+            var data = new AuthData
+            {
+                AccessToken = token,
+                ExpiresAt = expiresAt,
+                User = ToProfile(user)
+            };
 
-            return StatusCode(StatusCodes.Status201Created, ApiResponse<AuthResponse>.Ok(payload, "User registered."));
+            return StatusCode(StatusCodes.Status201Created, Master.CreateAPIResponse(true, "User registered.", data));
         }
         catch (SqlException ex) when (ex.Number is 2601 or 2627)
         {
-            return Conflict(ApiResponse<AuthResponse>.Fail("Username or email is already registered."));
+            return Conflict(Master.CreateAPIResponse(false, "Username or email is already registered."));
         }
         catch (SqlException ex)
         {
             _logger.LogError(ex, "Database error during user registration.");
             return StatusCode(StatusCodes.Status500InternalServerError,
-                ApiResponse<AuthResponse>.Fail("An unexpected error occurred."));
+                Master.CreateAPIResponse(false, "An unexpected error occurred."));
         }
     }
 
     [HttpPost("login")]
     [AllowAnonymous]
     [EnableRateLimiting("auth")]
-    public async Task<ActionResult<ApiResponse<AuthResponse>>> Login(
+    public async Task<ActionResult<APIResponse>> Login(
         [FromBody] LoginRequest request,
         CancellationToken cancellationToken)
     {
@@ -90,31 +95,36 @@ public sealed class AuthController : ControllerBase
             var user = await _userRepository.GetByIdentifierAsync(identifier, cancellationToken);
             if (user is null || !user.IsActive)
             {
-                return Unauthorized(ApiResponse<AuthResponse>.Fail("Invalid credentials."));
+                return Unauthorized(Master.CreateAPIResponse(false, "Invalid credentials."));
             }
 
             var isValidPassword = await _hasher.VerifyPasswordAsync(request.Password, user.PasswordHash);
             if (!isValidPassword)
             {
-                return Unauthorized(ApiResponse<AuthResponse>.Fail("Invalid credentials."));
+                return Unauthorized(Master.CreateAPIResponse(false, "Invalid credentials."));
             }
 
             var (token, expiresAt) = _authHelper.GenerateToken(user);
-            var payload = new AuthResponse(token, expiresAt, ToProfile(user));
+            var data = new AuthData
+            {
+                AccessToken = token,
+                ExpiresAt = expiresAt,
+                User = ToProfile(user)
+            };
 
-            return Ok(ApiResponse<AuthResponse>.Ok(payload, "Login successful."));
+            return Ok(Master.CreateAPIResponse(true, "Login successful.", data));
         }
         catch (SqlException ex)
         {
             _logger.LogError(ex, "Database error during login.");
             return StatusCode(StatusCodes.Status500InternalServerError,
-                ApiResponse<AuthResponse>.Fail("An unexpected error occurred."));
+                Master.CreateAPIResponse(false, "An unexpected error occurred."));
         }
     }
 
     [HttpGet("me")]
     [Authorize]
-    public async Task<ActionResult<ApiResponse<UserProfileResponse>>> Me(CancellationToken cancellationToken)
+    public async Task<ActionResult<APIResponse>> Me(CancellationToken cancellationToken)
     {
         Response.Headers.CacheControl = "no-store";
 
@@ -123,7 +133,7 @@ public sealed class AuthController : ControllerBase
 
         if (!int.TryParse(sub, out var userId))
         {
-            return Unauthorized(ApiResponse<UserProfileResponse>.Fail("Invalid token."));
+            return Unauthorized(Master.CreateAPIResponse(false, "Invalid token."));
         }
 
         try
@@ -131,19 +141,26 @@ public sealed class AuthController : ControllerBase
             var user = await _userRepository.GetByIdAsync(userId, cancellationToken);
             if (user is null || !user.IsActive)
             {
-                return Unauthorized(ApiResponse<UserProfileResponse>.Fail("Unauthorized."));
+                return Unauthorized(Master.CreateAPIResponse(false, "Unauthorized."));
             }
 
-            return Ok(ApiResponse<UserProfileResponse>.Ok(ToProfile(user)));
+            return Ok(Master.CreateAPIResponse(true, data: ToProfile(user)));
         }
         catch (SqlException ex)
         {
             _logger.LogError(ex, "Database error while loading current user profile.");
             return StatusCode(StatusCodes.Status500InternalServerError,
-                ApiResponse<UserProfileResponse>.Fail("An unexpected error occurred."));
+                Master.CreateAPIResponse(false, "An unexpected error occurred."));
         }
     }
 
-    private static UserProfileResponse ToProfile(User user) =>
-        new(user.Id, user.Username, user.Email, user.Role, user.CreatedAt);
+    private static UserProfile ToProfile(User user) =>
+        new()
+        {
+            Id = user.Id,
+            Username = user.Username,
+            Email = user.Email,
+            Role = user.Role,
+            CreatedAt = user.CreatedAt
+        };
 }
