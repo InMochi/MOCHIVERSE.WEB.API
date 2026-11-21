@@ -12,6 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+builder.Services.AddMemoryCache();
 
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
 var jwtAudience = builder.Configuration["Jwt:Audience"];
@@ -73,7 +74,14 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
+builder.Services.AddHttpClient<TmdbTitleProvider>();
+builder.Services.AddHttpClient<JikanTitleProvider>();
+builder.Services.AddTransient<ITitleProvider>(sp => sp.GetRequiredService<TmdbTitleProvider>());
+builder.Services.AddTransient<ITitleProvider>(sp => sp.GetRequiredService<JikanTitleProvider>());
+
 builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<ITitleCacheRepository, TitleCacheRepository>();
+builder.Services.AddScoped<TitleService>();
 builder.Services.AddSingleton<Hasher>();
 builder.Services.AddSingleton<AuthHelper>();
 
