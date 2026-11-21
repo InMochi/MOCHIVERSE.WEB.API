@@ -2,20 +2,38 @@
 
 Dokumentasi kontrak REST API untuk frontend web Mochiverse (`MOCHI.VERSE.API`).
 
-## 1. Base URL & Environment
+## 1. Base URL, HTTPS & Dev Proxy
 
 | Environment | Base URL | Swagger UI |
 | --- | --- | --- |
-| Development (HTTPS) | `https://localhost:7003` | `https://localhost:7003/swagger` |
-| Development (HTTP) | `http://localhost:5176` | `http://localhost:5176/swagger` |
+| Development (HTTPS, wajib untuk `__Host-` cookie) | `https://localhost:7003` | `https://localhost:7003/swagger` |
+| Development (HTTP, tidak bisa set cookie `__Host-` / `Secure`) | `http://localhost:5176` | - |
 
-> **Catatan CORS:** API mengizinkan origin dari `Cors:AllowedOrigins` (default Development di `appsettings.Development.json`: `http://localhost:3000` dan `http://localhost:5173`, method `GET/POST/PUT/DELETE/OPTIONS`, header `Authorization` & `Content-Type`). Tambahkan origin lain di `Cors:AllowedOrigins` jika frontend berjalan di port berbeda.
+- **Wajib HTTPS di Development:** Cookie sesi `__Host-mochi_access`, cookie CSRF internal `__Host-mochi_xsrf`, dan cookie `XSRF-TOKEN` memakai `Secure = true` dan `SameSite = Lax`.
+- **Rekomendasi Dev Frontend:** Gunakan dev proxy same-origin di Vite/Next.js yang meneruskan `/api/*` ke `https://localhost:7003` (atau jalankan frontend juga di HTTPS), sehingga browser tidak mengalami kendala `http://` vs `https://` saat membaca/mengirim cookie `Secure` + `SameSite=Lax`.
+- **CORS:** Policy CORS mengizinkan origin eksplisit dari `Cors:AllowedOrigins` (default Dev: `http://localhost:3000`, `http://localhost:5173`) dengan `AllowCredentials()`, method `GET/POST/PUT/DELETE/OPTIONS`, dan header `Authorization`, `Content-Type`, `X-XSRF-TOKEN`.
 
 ---
 
-## 2. Format Response & Auth Header
+## 2. Autentikasi Cookie & Proteksi CSRF
 
-Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIResponse`:
+Sesi web **tidak menggunakan Bearer token di JSON body / `localStorage`**, melainkan **HttpOnly Cookie + CSRF Double-Submit**.
+
+- **Cookie Sesi:** `__Host-mochi_access` (`HttpOnly = true`, `Secure = true`, `SameSite = Lax`, `Path = "/"`). Dikirim otomatis oleh browser saat `credentials: "include"`.
+- **Cookie & Header CSRF:**
+  - Endpoint inisialisasi: `GET /api/auth/csrf`
+  - Cookie terbaca JS: `XSRF-TOKEN` (`HttpOnly = false`, `Secure = true`, `SameSite = Lax`, `Path = "/"`) + cookie internal `__Host-mochi_xsrf` (`HttpOnly = true`)
+  - Header wajib pada seluruh request `POST`, `PUT`, `DELETE`, `PATCH`: `X-XSRF-TOKEN`
+- **Aturan Siklus CSRF (`IAntiforgery`):**
+  1. Panggil `GET /api/auth/csrf` saat app dimuat (atau sebelum mutasi pertama) dengan `credentials: "include"`.
+  2. Simpan `data.requestToken` (atau baca cookie `XSRF-TOKEN`) lalu kirim di header `X-XSRF-TOKEN` pada setiap `POST`/`PUT`/`DELETE`.
+  3. **Wajib panggil `GET /api/auth/csrf` ulang setelah `login`, `register`, dan `logout`**, karena `IAntiforgery` mengikat token CSRF ke identity user (anonymous vs authenticated). Token sebelum login akan ditolak `403` setelah sesi login terbentuk.
+
+---
+
+## 3. Format Response, Pagination & Error
+
+### Wrapper Standar (`APIResponse`)
 
 ```json
 {
@@ -25,11 +43,35 @@ Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIR
 }
 ```
 
-- **Auth Header:** Endpoint bertanda `Auth: Bearer` wajib mengirim header:
-  ```http
-  Authorization: Bearer <accessToken>
+### Wrapper Pagination Seragam
+
+Semua endpoint list (`titles/search`, `titles/{source}/{id}/ratings`, `me/watchlist`) memakai struktur:
+
+```json
+{
+  "items": [],
+  "page": 1,
+  "pageSize": 20,
+  "totalItems": 45,
+  "totalPages": 3,
+  "hasNextPage": true
+}
+```
+
+### Error Format Seragam
+
+- **`400 Bad Request` (Validasi DTO DataAnnotations):**
+  ```json
+  {
+    "ok": false,
+    "message": "Validation failed.",
+    "data": null,
+    "errors": {
+      "username": ["The Username field is required."]
+    }
+  }
   ```
-- **Error `401 Unauthorized`** (token tidak ada, expired, atau sudah logout/revoked):
+- **`401 Unauthorized`** (cookie sesi tidak ada, expired, atau sudah di-revoke saat logout):
   ```json
   {
     "ok": false,
@@ -37,15 +79,48 @@ Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIR
     "data": null
   }
   ```
-- **Error `400 Bad Request` dari DataAnnotations:** Model validation otomatis ASP.NET Core mengembalikan `ValidationProblemDetails` (field `errors` per properti), sedangkan validasi bisnis/parameter mengembalikan wrapper `{ "ok": false, "message": "...", "data": null }`.
-- **Rate Limit:** Endpoint `POST /api/auth/register` dan `POST /api/auth/login` dibatasi `10` request/menit per IP (`429 Too Many Requests`).
+- **`403 Forbidden`** (token/cookie `X-XSRF-TOKEN` tidak ada atau tidak valid):
+  ```json
+  {
+    "ok": false,
+    "message": "Invalid or missing CSRF token.",
+    "data": null
+  }
+  ```
+- **`429 Too Many Requests`** (menyertakan header `Retry-After` jika tersedia):
+  ```json
+  {
+    "ok": false,
+    "message": "Too many requests. Please try again later.",
+    "data": null
+  }
+  ```
+  Batas rate limit:
+  - `POST /api/auth/register`, `POST /api/auth/login`: `10` req/menit per IP
+  - `GET /api/titles/search`, `GET /api/titles/{source}/{id}`: `30` req/menit per IP
+  - `PUT`/`DELETE` rating & watchlist: `30` req/menit per user
+- **`500` / `502` / `503`:** Selalu memakai `{ "ok": false, "message": "...", "data": null }` tanpa stack trace atau detail error SQL Server.
 
 ---
 
-## 3. Auth Endpoints
+## 4. Auth Endpoints
+
+### `GET /api/auth/csrf`
+- **Auth:** Public (`Cache-Control: no-store`)
+- **Response `200 OK`:** Set cookie `XSRF-TOKEN` dan `__Host-mochi_xsrf`, lalu mengembalikan:
+  ```json
+  {
+    "ok": true,
+    "message": null,
+    "data": {
+      "headerName": "X-XSRF-TOKEN",
+      "requestToken": "..."
+    }
+  }
+  ```
 
 ### `POST /api/auth/register`
-- **Auth:** Public
+- **Auth:** Public + CSRF (`X-XSRF-TOKEN`)
 - **Rate Limit:** 10 req/menit per IP
 - **Request Body:**
   ```json
@@ -58,13 +133,12 @@ Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIR
   - `username`: wajib, 3-50 karakter, hanya huruf, angka, `.`, `_`, `-`
   - `email`: wajib, format email valid, maks 255 karakter
   - `password`: wajib, 8-128 karakter
-- **Response `201 Created`:**
+- **Response `201 Created`:** Set cookie `__Host-mochi_access`, mengembalikan tanpa `accessToken`:
   ```json
   {
     "ok": true,
     "message": "User registered.",
     "data": {
-      "accessToken": "eyJhbGciOiJIUzI1NiIs...",
       "expiresAt": "2026-11-22T01:00:00Z",
       "user": {
         "id": 1,
@@ -76,10 +150,10 @@ Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIR
     }
   }
   ```
-- **Error:** `409 Conflict` jika `username` atau `email` sudah terdaftar.
+- **Error:** `400` validation failed, `403` CSRF invalid, `409 Conflict` jika `username` atau `email` sudah terdaftar.
 
 ### `POST /api/auth/login`
-- **Auth:** Public
+- **Auth:** Public + CSRF (`X-XSRF-TOKEN`)
 - **Rate Limit:** 10 req/menit per IP
 - **Request Body:**
   ```json
@@ -89,13 +163,13 @@ Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIR
   }
   ```
   - `identifier`: bisa diisi `username` atau `email`.
-- **Response `200 OK`:** Sama seperti `register` (`data.accessToken`, `data.expiresAt`, `data.user`).
-- **Error:** `401 Unauthorized` (`"Invalid credentials."`).
+- **Response `200 OK`:** Set cookie `__Host-mochi_access`, mengembalikan `data.expiresAt` dan `data.user` (tanpa `accessToken`).
+- **Error:** `401 Unauthorized` (`"Invalid credentials."`), `403` CSRF invalid.
 
 ### `POST /api/auth/logout`
-- **Auth:** Bearer
+- **Auth:** Cookie `__Host-mochi_access` + CSRF (`X-XSRF-TOKEN`)
 - **Request Body:** Tidak ada.
-- **Response `200 OK`:**
+- **Response `200 OK`:** Menghapus cookie `__Host-mochi_access` dan mencatat `jti` ke `dbo.RevokedTokens`:
   ```json
   {
     "ok": true,
@@ -103,10 +177,9 @@ Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIR
     "data": null
   }
   ```
-- **Perilaku:** Token (`jti`) langsung dicatat ke `dbo.RevokedTokens` dan cache memori sehingga token lama langsung ditolak `401` pada request berikutnya. Frontend tetap wajib menghapus token dari state/storage.
 
 ### `GET /api/auth/me`
-- **Auth:** Bearer
+- **Auth:** Cookie `__Host-mochi_access` (`Cache-Control: no-store`)
 - **Response `200 OK`:**
   ```json
   {
@@ -124,7 +197,7 @@ Semua endpoint kustom mengembalikan JSON camelCase dengan struktur wrapper `APIR
 
 ---
 
-## 4. Titles Endpoints
+## 5. Titles Endpoints
 
 Identitas setiap judul menggunakan pasangan `(source, id)`:
 - `source`: `"tmdb"` (film) atau `"jikan"` (anime)
@@ -132,32 +205,40 @@ Identitas setiap judul menggunakan pasangan `(source, id)`:
 
 ### `GET /api/titles/search`
 - **Auth:** Public
+- **Rate Limit:** 30 req/menit per IP
 - **Query Params:**
   - `q` (wajib, maks 100 karakter): kata kunci pencarian
   - `type` (opsional): `"movie"` | `"anime"` (jika kosong, mencari ke kedua provider)
   - `page` (opsional, default `1`, rentang `1..100`)
-- **Contoh:** `GET /api/titles/search?q=matrix&type=movie&page=1`
 - **Response `200 OK`:**
   ```json
   {
     "ok": true,
     "message": null,
-    "data": [
-      {
-        "source": "tmdb",
-        "externalId": "603",
-        "mediaType": "movie",
-        "title": "The Matrix",
-        "posterUrl": "https://image.tmdb.org/t/p/w500/...",
-        "releaseYear": 1999,
-        "synopsis": "..."
-      }
-    ]
+    "data": {
+      "items": [
+        {
+          "source": "tmdb",
+          "externalId": "603",
+          "mediaType": "movie",
+          "title": "The Matrix",
+          "posterUrl": "https://image.tmdb.org/t/p/w500/...",
+          "releaseYear": 1999,
+          "synopsis": "..."
+        }
+      ],
+      "page": 1,
+      "pageSize": 20,
+      "totalItems": 42,
+      "totalPages": 3,
+      "hasNextPage": true
+    }
   }
   ```
 
 ### `GET /api/titles/{source}/{id}`
-- **Auth:** Public
+- **Auth:** Public (jika cookie `__Host-mochi_access` valid ikut terkirim, mengembalikan `myRating` & `myWatchlist` serta `Cache-Control: no-store`)
+- **Rate Limit:** 30 req/menit per IP
 - **Response `200 OK`:**
   ```json
   {
@@ -171,17 +252,32 @@ Identitas setiap judul menggunakan pasangan `(source, id)`:
       "posterUrl": "https://image.tmdb.org/t/p/w500/...",
       "releaseYear": 1999,
       "synopsis": "...",
+      "genres": ["Action", "Science Fiction"],
       "cachedAt": "2026-11-22T00:00:00Z",
       "totalVotes": 12,
-      "averageScore": 8.75
+      "averageScore": 8.75,
+      "myRating": {
+        "id": 10,
+        "score": 9,
+        "review": "Classic sci-fi.",
+        "createdAt": "2026-11-22T00:01:00Z",
+        "updatedAt": null
+      },
+      "myWatchlist": {
+        "id": 5,
+        "status": "Completed",
+        "createdAt": "2026-11-22T00:02:00Z",
+        "updatedAt": null
+      }
     }
   }
   ```
-- **Error:** `400 Bad Request` (source/id tidak valid), `404 Not Found`, `502 Bad Gateway` (API eksternal gagal), `503 Service Unavailable` (token TMDB belum dikonfigurasi).
+  - Jika user belum login atau belum punya rating/watchlist untuk judul ini, `myRating` dan/atau `myWatchlist` bernilai `null`.
+  - Jika poster tidak tersedia, `posterUrl` selalu `null` (bukan string kosong).
 
 ---
 
-## 5. Ratings Endpoints
+## 6. Ratings Endpoints
 
 ### `GET /api/titles/{source}/{id}/ratings`
 - **Auth:** Public
@@ -198,8 +294,6 @@ Identitas setiap judul menggunakan pasangan `(source, id)`:
       "externalId": "603",
       "totalVotes": 1,
       "averageScore": 9.0,
-      "page": 1,
-      "pageSize": 20,
       "items": [
         {
           "id": 10,
@@ -209,13 +303,19 @@ Identitas setiap judul menggunakan pasangan `(source, id)`:
           "createdAt": "2026-11-22T00:01:00Z",
           "updatedAt": null
         }
-      ]
+      ],
+      "page": 1,
+      "pageSize": 20,
+      "totalItems": 1,
+      "totalPages": 1,
+      "hasNextPage": false
     }
   }
   ```
 
 ### `PUT /api/titles/{source}/{id}/rating`
-- **Auth:** Bearer
+- **Auth:** Cookie `__Host-mochi_access` + CSRF (`X-XSRF-TOKEN`)
+- **Rate Limit:** 30 req/menit per user
 - **Request Body:**
   ```json
   {
@@ -223,48 +323,21 @@ Identitas setiap judul menggunakan pasangan `(source, id)`:
     "review": "Classic sci-fi."
   }
   ```
-  - `score`: wajib, integer `1..10`
-  - `review`: opsional, maks 2000 karakter
-- **Perilaku:** Idempotent (insert jika belum ada, update jika user sudah pernah memberi rating pada judul ini). Backend otomatis memverifikasi dan menyimpan metadata judul ke `TitleCache`.
-- **Response `200 OK`:**
-  ```json
-  {
-    "ok": true,
-    "message": "Rating saved.",
-    "data": {
-      "id": 10,
-      "userId": 1,
-      "username": "mochi_user",
-      "source": "tmdb",
-      "externalId": "603",
-      "score": 9,
-      "review": "Classic sci-fi.",
-      "createdAt": "2026-11-22T00:01:00Z",
-      "updatedAt": null
-    }
-  }
-  ```
+- **Response `200 OK`:** Mengembalikan `RatingRecord` (`id`, `userId`, `username`, `source`, `externalId`, `score`, `review`, `createdAt`, `updatedAt`).
 
 ### `DELETE /api/titles/{source}/{id}/rating`
-- **Auth:** Bearer
-- **Response `200 OK`:**
-  ```json
-  {
-    "ok": true,
-    "message": "Rating deleted.",
-    "data": null
-  }
-  ```
-- **Error:** `404 Not Found` jika rating milik user untuk judul tersebut belum ada.
+- **Auth:** Cookie `__Host-mochi_access` + CSRF (`X-XSRF-TOKEN`)
+- **Rate Limit:** 30 req/menit per user
+- **Response `200 OK`:** `{ "ok": true, "message": "Rating deleted.", "data": null }`
 
 ---
 
-## 6. Watchlist Endpoints
+## 7. Watchlist Endpoints
 
 Nilai `status` yang valid: `"PlanToWatch"`, `"Watching"`, `"Completed"`.
 
 ### `GET /api/me/watchlist`
-- **Auth:** Bearer
+- **Auth:** Cookie `__Host-mochi_access` (`Cache-Control: no-store`)
 - **Query Params:**
   - `status` (opsional): `"PlanToWatch"` | `"Watching"` | `"Completed"`
   - `page` (opsional, default `1`, minimal `1`)
@@ -274,93 +347,100 @@ Nilai `status` yang valid: `"PlanToWatch"`, `"Watching"`, `"Completed"`.
   {
     "ok": true,
     "message": null,
-    "data": [
-      {
-        "id": 5,
-        "source": "jikan",
-        "externalId": "1535",
-        "status": "Watching",
-        "mediaType": "anime",
-        "title": "Death Note",
-        "posterUrl": "https://cdn.myanimelist.net/images/anime/1079/138100.jpg",
-        "releaseYear": 2006,
-        "createdAt": "2026-11-22T00:02:00Z",
-        "updatedAt": null
-      }
-    ]
-  }
-  ```
-
-### `PUT /api/me/watchlist/{source}/{id}`
-- **Auth:** Bearer
-- **Request Body:**
-  ```json
-  {
-    "status": "Watching"
-  }
-  ```
-- **Perilaku:** Idempotent (tambah ke watchlist atau ubah status). Backend otomatis mengisi `TitleCache` jika judul belum ada di cache.
-- **Response `200 OK`:**
-  ```json
-  {
-    "ok": true,
-    "message": "Watchlist updated.",
     "data": {
-      "id": 5,
-      "source": "jikan",
-      "externalId": "1535",
-      "status": "Watching",
-      "mediaType": "anime",
-      "title": "Death Note",
-      "posterUrl": "https://cdn.myanimelist.net/images/anime/1079/138100.jpg",
-      "releaseYear": 2006,
-      "createdAt": "2026-11-22T00:02:00Z",
-      "updatedAt": "2026-11-22T00:03:00Z"
+      "items": [
+        {
+          "id": 5,
+          "source": "jikan",
+          "externalId": "1535",
+          "status": "Watching",
+          "mediaType": "anime",
+          "title": "Death Note",
+          "posterUrl": "https://cdn.myanimelist.net/images/anime/1079/138100.jpg",
+          "releaseYear": 2006,
+          "createdAt": "2026-11-22T00:02:00Z",
+          "updatedAt": null
+        }
+      ],
+      "page": 1,
+      "pageSize": 20,
+      "totalItems": 1,
+      "totalPages": 1,
+      "hasNextPage": false,
+      "counts": {
+        "planToWatch": 4,
+        "watching": 1,
+        "completed": 10
+      }
     }
   }
   ```
 
+### `PUT /api/me/watchlist/{source}/{id}`
+- **Auth:** Cookie `__Host-mochi_access` + CSRF (`X-XSRF-TOKEN`)
+- **Rate Limit:** 30 req/menit per user
+- **Request Body:** `{ "status": "Watching" }`
+- **Response `200 OK`:** `{ "ok": true, "message": "Watchlist updated.", "data": WatchlistItem }`
+
 ### `DELETE /api/me/watchlist/{source}/{id}`
-- **Auth:** Bearer
-- **Response `200 OK`:**
-  ```json
-  {
-    "ok": true,
-    "message": "Watchlist entry removed.",
-    "data": null
-  }
-  ```
-- **Error:** `404 Not Found` jika entri watchlist tidak ditemukan.
+- **Auth:** Cookie `__Host-mochi_access` + CSRF (`X-XSRF-TOKEN`)
+- **Rate Limit:** 30 req/menit per user
+- **Response `200 OK`:** `{ "ok": true, "message": "Watchlist entry removed.", "data": null }`
 
 ---
 
-## 7. Contoh Fetch Wrapper (Frontend TypeScript)
+## 8. Contoh Fetch Wrapper (Frontend TypeScript)
 
 ```ts
-const API_BASE = "https://localhost:7003";
+const API_BASE = ""; // Gunakan "" jika memakai dev proxy same-origin, atau "https://localhost:7003"
 
 export interface ApiResponse<T> {
   ok: boolean;
   message: string | null;
   data: T | null;
+  errors?: Record<string, string[]>;
+}
+
+let csrfTokenCache: string | null = null;
+
+export async function refreshCsrfToken(): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/auth/csrf`, {
+    method: "GET",
+    credentials: "include",
+  });
+  const body = (await res.json()) as ApiResponse<{ headerName: string; requestToken: string }>;
+  if (!res.ok || !body.data?.requestToken) {
+    throw new Error(body.message ?? "Failed to initialize CSRF token.");
+  }
+  csrfTokenCache = body.data.requestToken;
+  return csrfTokenCache;
 }
 
 export async function apiFetch<T>(
   path: string,
-  options: RequestInit = {},
-  token?: string
+  options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
+  const method = (options.method ?? "GET").toUpperCase();
+  const isStateChanging = !["GET", "HEAD", "OPTIONS", "TRACE"].includes(method);
+
   const headers = new Headers(options.headers);
   if (options.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
+
+  if (isStateChanging) {
+    const csrf = csrfTokenCache ?? (await refreshCsrfToken());
+    headers.set("X-XSRF-TOKEN", csrf);
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  const body = (await res.json()) as ApiResponse<T>;
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    method,
+    headers,
+    credentials: "include",
+  });
 
+  const body = (await res.json()) as ApiResponse<T>;
   if (!res.ok) {
     throw new Error(body.message ?? `Request failed (${res.status})`);
   }
