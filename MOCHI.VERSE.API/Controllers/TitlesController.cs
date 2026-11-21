@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Data.SqlClient;
 using MOCHI.VERSE.API.Class;
 using MOCHI.VERSE.API.Models;
@@ -21,6 +22,7 @@ public sealed class TitlesController : ControllerBase
 
     [HttpGet("search")]
     [AllowAnonymous]
+    [EnableRateLimiting("titles")]
     public async Task<ActionResult<APIResponse>> Search(
         [FromQuery] string? q,
         [FromQuery] string? type = null,
@@ -62,14 +64,21 @@ public sealed class TitlesController : ControllerBase
 
     [HttpGet("{source}/{id}")]
     [AllowAnonymous]
+    [EnableRateLimiting("titles")]
     public async Task<ActionResult<APIResponse>> GetDetail(
         string source,
         string id,
         CancellationToken cancellationToken = default)
     {
+        var userId = User.Identity?.IsAuthenticated == true ? Master.GetUserId(User) : null;
+        if (userId is not null)
+        {
+            Response.Headers.CacheControl = "no-store";
+        }
+
         try
         {
-            var detail = await _titleService.GetDetailAsync(source, id, cancellationToken);
+            var detail = await _titleService.GetDetailAsync(source, id, userId, cancellationToken);
             if (detail is null)
             {
                 return NotFound(Master.CreateAPIResponse(false, "Title not found."));

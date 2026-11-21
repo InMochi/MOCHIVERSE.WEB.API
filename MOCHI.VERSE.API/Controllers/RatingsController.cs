@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Data.SqlClient;
 using MOCHI.VERSE.API.Class;
 using MOCHI.VERSE.API.Interfaces;
@@ -30,6 +31,7 @@ public sealed class RatingsController : ControllerBase
 
     [HttpPut("rating")]
     [Authorize]
+    [EnableRateLimiting("write")]
     public async Task<ActionResult<APIResponse>> UpsertRating(
         string source,
         string id,
@@ -82,6 +84,7 @@ public sealed class RatingsController : ControllerBase
 
     [HttpDelete("rating")]
     [Authorize]
+    [EnableRateLimiting("write")]
     public async Task<ActionResult<APIResponse>> DeleteRating(
         string source,
         string id,
@@ -149,6 +152,7 @@ public sealed class RatingsController : ControllerBase
                 AverageScore = summary.AverageScore,
                 Page = page,
                 PageSize = pageSize,
+                TotalItems = summary.TotalVotes,
                 Items = items
             };
 

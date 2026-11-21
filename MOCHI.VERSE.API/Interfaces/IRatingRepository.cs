@@ -21,6 +21,12 @@ public interface IRatingRepository
         string externalId,
         CancellationToken cancellationToken = default);
 
+    Task<MyTitleRating?> GetUserRatingAsync(
+        int userId,
+        string source,
+        string externalId,
+        CancellationToken cancellationToken = default);
+
     Task<List<RatingItem>> GetByTitleAsync(
         string source,
         string externalId,

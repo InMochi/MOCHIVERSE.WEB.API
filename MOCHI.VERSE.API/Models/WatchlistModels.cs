@@ -23,3 +23,15 @@ public class WatchlistItem
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
 }
+
+public class WatchlistCounts
+{
+    public int PlanToWatch { get; set; }
+    public int Watching { get; set; }
+    public int Completed { get; set; }
+}
+
+public class WatchlistPage : PagedResult<WatchlistItem>
+{
+    public WatchlistCounts Counts { get; set; } = new();
+}

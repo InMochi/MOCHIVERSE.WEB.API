@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -14,21 +15,59 @@ namespace MOCHI.VERSE.API.Controllers;
 [Route("api/[controller]")]
 public sealed class AuthController : ControllerBase
 {
+    public const string AccessCookieName = "__Host-mochi_access";
+    public const string CsrfCookieName = "XSRF-TOKEN";
+    public const string CsrfHeaderName = "X-XSRF-TOKEN";
+
     private readonly IUserRepository _userRepository;
     private readonly Hasher _hasher;
     private readonly AuthHelper _authHelper;
+    private readonly IAntiforgery _antiforgery;
     private readonly ILogger<AuthController> _logger;
 
     public AuthController(
         IUserRepository userRepository,
         Hasher hasher,
         AuthHelper authHelper,
+        IAntiforgery antiforgery,
         ILogger<AuthController> logger)
     {
         _userRepository = userRepository;
         _hasher = hasher;
         _authHelper = authHelper;
+        _antiforgery = antiforgery;
         _logger = logger;
+    }
+
+    [HttpGet("csrf")]
+    [AllowAnonymous]
+    public ActionResult<APIResponse> GetCsrfToken()
+    {
+        Response.Headers.CacheControl = "no-store";
+
+        var tokens = _antiforgery.GetAndStoreTokens(HttpContext);
+        if (string.IsNullOrWhiteSpace(tokens.RequestToken))
+        {
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                Master.CreateAPIResponse(false, "Failed to generate CSRF token."));
+        }
+
+        Response.Cookies.Append(CsrfCookieName, tokens.RequestToken, new CookieOptions
+        {
+            HttpOnly = false,
+            Secure = true,
+            SameSite = SameSiteMode.Lax,
+            Path = "/",
+            IsEssential = true
+        });
+
+        var payload = new CsrfTokenData
+        {
+            HeaderName = CsrfHeaderName,
+            RequestToken = tokens.RequestToken
+        };
+
+        return Ok(Master.CreateAPIResponse(true, data: payload));
     }
 
     [HttpPost("register")]
@@ -54,9 +93,10 @@ public sealed class AuthController : ControllerBase
             var user = await _userRepository.CreateAsync(username, email, passwordHash, "User", cancellationToken);
 
             var (token, expiresAt) = _authHelper.GenerateToken(user);
+            AppendAuthCookie(token, expiresAt);
+
             var data = new AuthData
             {
-                AccessToken = token,
                 ExpiresAt = expiresAt,
                 User = ToProfile(user)
             };
@@ -105,9 +145,10 @@ public sealed class AuthController : ControllerBase
             }
 
             var (token, expiresAt) = _authHelper.GenerateToken(user);
+            AppendAuthCookie(token, expiresAt);
+
             var data = new AuthData
             {
-                AccessToken = token,
                 ExpiresAt = expiresAt,
                 User = ToProfile(user)
             };
@@ -142,6 +183,7 @@ public sealed class AuthController : ControllerBase
         try
         {
             await _userRepository.RevokeTokenAsync(jti, userId.Value, expiresAt, cancellationToken);
+            DeleteAuthCookie();
             return Ok(Master.CreateAPIResponse(true, "Logged out successfully."));
         }
         catch (SqlException ex)
@@ -180,6 +222,30 @@ public sealed class AuthController : ControllerBase
             return StatusCode(StatusCodes.Status500InternalServerError,
                 Master.CreateAPIResponse(false, "An unexpected error occurred."));
         }
+    }
+
+    private void AppendAuthCookie(string token, DateTime expiresAt)
+    {
+        Response.Cookies.Append(AccessCookieName, token, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = SameSiteMode.Lax,
+            Path = "/",
+            Expires = new DateTimeOffset(DateTime.SpecifyKind(expiresAt, DateTimeKind.Utc)),
+            IsEssential = true
+        });
+    }
+
+    private void DeleteAuthCookie()
+    {
+        Response.Cookies.Delete(AccessCookieName, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = SameSiteMode.Lax,
+            Path = "/"
+        });
     }
 
     private static UserProfile ToProfile(User user) =>

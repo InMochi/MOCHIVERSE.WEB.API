@@ -20,7 +20,13 @@ public interface IWatchlistRepository
         string externalId,
         CancellationToken cancellationToken = default);
 
-    Task<List<WatchlistItem>> GetByUserAsync(
+    Task<MyTitleWatchlist?> GetUserWatchlistItemAsync(
+        int userId,
+        string source,
+        string externalId,
+        CancellationToken cancellationToken = default);
+
+    Task<WatchlistPage> GetPageByUserAsync(
         int userId,
         string? status,
         int page,
