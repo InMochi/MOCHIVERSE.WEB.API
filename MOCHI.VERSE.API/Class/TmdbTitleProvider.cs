@@ -12,6 +12,8 @@ namespace MOCHI.VERSE.API.Class;
 /// </summary>
 public sealed class TmdbTitleProvider : ITitleProvider
 {
+    private const int TmdbPageSize = 20;
+
     private readonly HttpClient _httpClient;
     private readonly string _imageBaseUrl;
     private readonly string? _bearerToken;
@@ -38,7 +40,7 @@ public sealed class TmdbTitleProvider : ITitleProvider
         }
     }
 
-    public async Task<List<TitleSearchItem>> SearchAsync(string query, int page = 1, CancellationToken cancellationToken = default)
+    public async Task<ProviderSearchResult> SearchAsync(string query, int page = 1, CancellationToken cancellationToken = default)
     {
         EnsureConfigured();
 
@@ -49,10 +51,10 @@ public sealed class TmdbTitleProvider : ITitleProvider
         var payload = await response.Content.ReadFromJsonAsync<TmdbSearchResponse>(cancellationToken: cancellationToken);
         if (payload?.Results is null)
         {
-            return [];
+            return new ProviderSearchResult { PageSize = TmdbPageSize };
         }
 
-        return payload.Results
+        var items = payload.Results
             .Where(item => item.Id > 0 && !string.IsNullOrWhiteSpace(item.Title))
             .Select(item => new TitleSearchItem
             {
@@ -65,6 +67,14 @@ public sealed class TmdbTitleProvider : ITitleProvider
                 Synopsis = string.IsNullOrWhiteSpace(item.Overview) ? null : item.Overview
             })
             .ToList();
+
+        return new ProviderSearchResult
+        {
+            Items = items,
+            PageSize = TmdbPageSize,
+            TotalItems = payload.TotalResults,
+            TotalPages = payload.TotalPages
+        };
     }
 
     public async Task<TitleMetadata?> GetDetailAsync(string externalId, CancellationToken cancellationToken = default)
@@ -89,6 +99,12 @@ public sealed class TmdbTitleProvider : ITitleProvider
             return null;
         }
 
+        var genres = item.Genres?
+            .Where(g => !string.IsNullOrWhiteSpace(g.Name))
+            .Select(g => g.Name!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+
         return new TitleMetadata
         {
             Source = Source,
@@ -98,6 +114,7 @@ public sealed class TmdbTitleProvider : ITitleProvider
             PosterUrl = BuildPosterUrl(item.PosterPath),
             ReleaseYear = ParseYear(item.ReleaseDate),
             Synopsis = string.IsNullOrWhiteSpace(item.Overview) ? null : item.Overview,
+            Genres = genres,
             CachedAt = DateTime.UtcNow
         };
     }
@@ -138,6 +155,12 @@ public sealed class TmdbTitleProvider : ITitleProvider
     {
         [JsonPropertyName("results")]
         public List<TmdbMovieDto>? Results { get; set; }
+
+        [JsonPropertyName("total_pages")]
+        public int TotalPages { get; set; }
+
+        [JsonPropertyName("total_results")]
+        public int TotalResults { get; set; }
     }
 
     private sealed class TmdbMovieDto
@@ -156,5 +179,14 @@ public sealed class TmdbTitleProvider : ITitleProvider
 
         [JsonPropertyName("overview")]
         public string? Overview { get; set; }
+
+        [JsonPropertyName("genres")]
+        public List<TmdbGenreDto>? Genres { get; set; }
+    }
+
+    private sealed class TmdbGenreDto
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
     }
 }

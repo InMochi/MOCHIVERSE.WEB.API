@@ -34,13 +34,10 @@ public class RatingItem
     public DateTime? UpdatedAt { get; set; }
 }
 
-public class TitleRatingsPage
+public class TitleRatingsPage : PagedResult<RatingItem>
 {
     public string Source { get; set; } = string.Empty;
     public string ExternalId { get; set; } = string.Empty;
     public int TotalVotes { get; set; }
     public decimal AverageScore { get; set; }
-    public int Page { get; set; }
-    public int PageSize { get; set; }
-    public List<RatingItem> Items { get; set; } = [];
 }

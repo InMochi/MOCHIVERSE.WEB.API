@@ -15,22 +15,28 @@ public sealed class TitleService
 
     private readonly IReadOnlyDictionary<string, ITitleProvider> _providers;
     private readonly ITitleCacheRepository _cacheRepository;
+    private readonly IRatingRepository _ratingRepository;
+    private readonly IWatchlistRepository _watchlistRepository;
     private readonly IMemoryCache _memoryCache;
     private readonly ILogger<TitleService> _logger;
 
     public TitleService(
         IEnumerable<ITitleProvider> providers,
         ITitleCacheRepository cacheRepository,
+        IRatingRepository ratingRepository,
+        IWatchlistRepository watchlistRepository,
         IMemoryCache memoryCache,
         ILogger<TitleService> logger)
     {
         _providers = providers.ToDictionary(p => p.Source, StringComparer.OrdinalIgnoreCase);
         _cacheRepository = cacheRepository;
+        _ratingRepository = ratingRepository;
+        _watchlistRepository = watchlistRepository;
         _memoryCache = memoryCache;
         _logger = logger;
     }
 
-    public async Task<List<TitleSearchItem>> SearchAsync(
+    public async Task<PagedResult<TitleSearchItem>> SearchAsync(
         string query,
         string? type,
         int page,
@@ -42,7 +48,7 @@ public sealed class TitleService
         var selectedProviders = SelectProvidersForType(normalizedType);
         var cacheKey = $"titles:search:{normalizedType}:{normalizedQuery.ToLowerInvariant()}:{page}";
 
-        if (_memoryCache.TryGetValue(cacheKey, out List<TitleSearchItem>? cached) && cached is not null)
+        if (_memoryCache.TryGetValue(cacheKey, out PagedResult<TitleSearchItem>? cached) && cached is not null)
         {
             return cached;
         }
@@ -57,7 +63,7 @@ public sealed class TitleService
                 }
 
                 _logger.LogWarning("Skipping unconfigured provider {Source} during combined search.", provider.Source);
-                return new List<TitleSearchItem>();
+                return new ProviderSearchResult();
             }
 
             try
@@ -72,20 +78,32 @@ public sealed class TitleService
                 }
 
                 _logger.LogWarning(ex, "Provider {Source} failed during combined search.", provider.Source);
-                return [];
+                return new ProviderSearchResult();
             }
         });
 
         var resultBatches = await Task.WhenAll(tasks);
-        var combined = resultBatches.SelectMany(items => items).ToList();
 
-        _memoryCache.Set(cacheKey, combined, SearchCacheTtl);
-        return combined;
+        var items = resultBatches.SelectMany(batch => batch.Items).ToList();
+        var totalItems = resultBatches.Sum(batch => batch.TotalItems);
+        var combinedPageSize = Math.Max(1, resultBatches.Sum(batch => batch.PageSize));
+
+        var paged = new PagedResult<TitleSearchItem>
+        {
+            Items = items,
+            Page = page,
+            PageSize = combinedPageSize,
+            TotalItems = totalItems
+        };
+
+        _memoryCache.Set(cacheKey, paged, SearchCacheTtl);
+        return paged;
     }
 
     public async Task<TitleDetailResponse?> GetDetailAsync(
         string source,
         string externalId,
+        int? userId = null,
         CancellationToken cancellationToken = default)
     {
         var metadata = await EnsureTitleCachedAsync(source, externalId, cancellationToken);
@@ -94,7 +112,17 @@ public sealed class TitleService
             return null;
         }
 
-        var summary = await _cacheRepository.GetRatingSummaryAsync(metadata.Source, metadata.ExternalId, cancellationToken);
+        var summaryTask = _cacheRepository.GetRatingSummaryAsync(metadata.Source, metadata.ExternalId, cancellationToken);
+        Task<MyTitleRating?> myRatingTask = userId is int uid
+            ? _ratingRepository.GetUserRatingAsync(uid, metadata.Source, metadata.ExternalId, cancellationToken)
+            : Task.FromResult<MyTitleRating?>(null);
+        Task<MyTitleWatchlist?> myWatchlistTask = userId is int uid2
+            ? _watchlistRepository.GetUserWatchlistItemAsync(uid2, metadata.Source, metadata.ExternalId, cancellationToken)
+            : Task.FromResult<MyTitleWatchlist?>(null);
+
+        await Task.WhenAll(summaryTask, myRatingTask, myWatchlistTask);
+
+        var summary = await summaryTask;
 
         return new TitleDetailResponse
         {
@@ -102,12 +130,15 @@ public sealed class TitleService
             ExternalId = metadata.ExternalId,
             MediaType = metadata.MediaType,
             Title = metadata.Title,
-            PosterUrl = metadata.PosterUrl,
+            PosterUrl = string.IsNullOrWhiteSpace(metadata.PosterUrl) ? null : metadata.PosterUrl,
             ReleaseYear = metadata.ReleaseYear,
             Synopsis = metadata.Synopsis,
+            Genres = metadata.Genres,
             CachedAt = metadata.CachedAt,
             TotalVotes = summary.TotalVotes,
-            AverageScore = summary.AverageScore
+            AverageScore = summary.AverageScore,
+            MyRating = await myRatingTask,
+            MyWatchlist = await myWatchlistTask
         };
     }
 

@@ -1,17 +1,52 @@
+using System.Globalization;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using MOCHI.VERSE.API.Class;
+using MOCHI.VERSE.API.Controllers;
 using MOCHI.VERSE.API.Interfaces;
 using MOCHI.VERSE.API.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ValidateCsrfFilter>();
+});
+
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        var errors = context.ModelState
+            .Where(x => x.Value?.Errors.Count > 0)
+            .ToDictionary(
+                kvp => ToCamelCaseKey(kvp.Key),
+                kvp => kvp.Value!.Errors
+                    .Select(e => string.IsNullOrWhiteSpace(e.ErrorMessage) ? "Invalid value." : e.ErrorMessage)
+                    .ToArray());
+
+        return new BadRequestObjectResult(
+            Master.CreateAPIResponse(false, "Validation failed.", errors: errors));
+    };
+});
+
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = AuthController.CsrfHeaderName;
+    options.Cookie.Name = "__Host-mochi_xsrf";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite = SameSiteMode.Lax;
+    options.Cookie.Path = "/";
+});
+
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -64,6 +99,17 @@ builder.Services
         };
         options.Events = new JwtBearerEvents
         {
+            OnMessageReceived = context =>
+            {
+                if (string.IsNullOrWhiteSpace(context.Token) &&
+                    string.IsNullOrWhiteSpace(context.Request.Headers.Authorization) &&
+                    context.Request.Cookies.TryGetValue(AuthController.AccessCookieName, out var cookieToken))
+                {
+                    context.Token = cookieToken;
+                }
+
+                return Task.CompletedTask;
+            },
             OnTokenValidated = async context =>
             {
                 var jti = context.Principal?.FindFirstValue(JwtRegisteredClaimNames.Jti);
@@ -100,8 +146,9 @@ builder.Services.AddCors(options =>
         if (allowedOrigins.Length > 0)
         {
             policy.WithOrigins(allowedOrigins)
+                  .AllowCredentials()
                   .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                  .WithHeaders("Authorization", "Content-Type");
+                  .WithHeaders("Authorization", "Content-Type", AuthController.CsrfHeaderName);
         }
     });
 });
@@ -109,6 +156,20 @@ builder.Services.AddCors(options =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((long)Math.Ceiling(retryAfter.TotalSeconds)).ToString(NumberFormatInfo.InvariantInfo);
+        }
+
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            Master.CreateAPIResponse(false, "Too many requests. Please try again later."),
+            cancellationToken);
+    };
+
     options.AddPolicy("auth", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -118,6 +179,33 @@ builder.Services.AddRateLimiter(options =>
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             }));
+
+    options.AddPolicy("titles", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    options.AddPolicy("write", context =>
+    {
+        var userId = Master.GetUserId(context.User);
+        var key = userId is not null
+            ? $"user:{userId.Value}"
+            : $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: key,
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            });
+    });
 });
 
 builder.Services.AddHttpClient<TmdbTitleProvider>();
@@ -130,10 +218,21 @@ builder.Services.AddScoped<ITitleCacheRepository, TitleCacheRepository>();
 builder.Services.AddScoped<IRatingRepository, RatingRepository>();
 builder.Services.AddScoped<IWatchlistRepository, WatchlistRepository>();
 builder.Services.AddScoped<TitleService>();
+builder.Services.AddScoped<ValidateCsrfFilter>();
 builder.Services.AddSingleton<Hasher>();
 builder.Services.AddSingleton<AuthHelper>();
 
 var app = builder.Build();
+
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsJsonAsync(
+            Master.CreateAPIResponse(false, "An unexpected error occurred."));
+    });
+});
 
 app.Use(async (context, next) =>
 {
@@ -154,9 +253,25 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseCors();
-app.UseRateLimiter();
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static string ToCamelCaseKey(string key)
+{
+    if (string.IsNullOrWhiteSpace(key))
+    {
+        return string.Empty;
+    }
+
+    var segments = key.Split('.');
+    for (var i = 0; i < segments.Length; i++)
+    {
+        segments[i] = JsonNamingPolicy.CamelCase.ConvertName(segments[i]);
+    }
+
+    return string.Join('.', segments);
+}

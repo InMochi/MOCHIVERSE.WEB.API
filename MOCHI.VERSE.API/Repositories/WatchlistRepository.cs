@@ -76,7 +76,32 @@ public sealed class WatchlistRepository : IWatchlistRepository
         return affected > 0;
     }
 
-    public async Task<List<WatchlistItem>> GetByUserAsync(
+    public async Task<MyTitleWatchlist?> GetUserWatchlistItemAsync(
+        int userId,
+        string source,
+        string externalId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = new SqlHelper(_configuration);
+        db.CommandText = """
+            SELECT TOP (1) Id, Status, CreatedAt, UpdatedAt
+            FROM dbo.Watchlists
+            WHERE UserId = @UserId AND Source = @Source AND ExternalId = @ExternalId;
+            """;
+        db.AddParameter("@UserId", userId, SqlDbType.Int);
+        db.AddParameter("@Source", source, SqlDbType.VarChar, 20);
+        db.AddParameter("@ExternalId", externalId, SqlDbType.VarChar, 50);
+
+        return await db.QueryFirstOrDefaultAsync(reader => new MyTitleWatchlist
+        {
+            Id = reader.GetInt32(reader.GetOrdinal("Id")),
+            Status = reader.GetString(reader.GetOrdinal("Status")),
+            CreatedAt = reader.GetDateTime(reader.GetOrdinal("CreatedAt")),
+            UpdatedAt = reader.IsDBNull(reader.GetOrdinal("UpdatedAt")) ? null : reader.GetDateTime(reader.GetOrdinal("UpdatedAt"))
+        }, cancellationToken);
+    }
+
+    public async Task<WatchlistPage> GetPageByUserAsync(
         int userId,
         string? status,
         int page,
@@ -85,6 +110,16 @@ public sealed class WatchlistRepository : IWatchlistRepository
     {
         await using var db = new SqlHelper(_configuration);
         db.CommandText = """
+            SELECT COUNT(*)
+            FROM dbo.Watchlists
+            WHERE UserId = @UserId
+              AND (@Status IS NULL OR Status = @Status);
+
+            SELECT Status, COUNT(*) AS Cnt
+            FROM dbo.Watchlists
+            WHERE UserId = @UserId
+            GROUP BY Status;
+
             SELECT
                 w.Id, w.Source, w.ExternalId, w.Status, w.CreatedAt, w.UpdatedAt,
                 tc.MediaType, tc.Title, tc.PosterUrl, tc.ReleaseYear
@@ -101,7 +136,53 @@ public sealed class WatchlistRepository : IWatchlistRepository
         db.AddParameter("@Offset", (page - 1) * pageSize, SqlDbType.Int);
         db.AddParameter("@PageSize", pageSize, SqlDbType.Int);
 
-        return await db.QueryListAsync(MapWatchlistItem, cancellationToken);
+        await using var reader = await db.ExecuteReaderAsync(CommandBehavior.Default, cancellationToken);
+
+        var totalItems = 0;
+        if (await reader.ReadAsync(cancellationToken))
+        {
+            totalItems = reader.GetInt32(0);
+        }
+
+        var counts = new WatchlistCounts();
+        if (await reader.NextResultAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var rowStatus = reader.GetString(0);
+                var count = reader.GetInt32(1);
+                switch (rowStatus)
+                {
+                    case "PlanToWatch":
+                        counts.PlanToWatch = count;
+                        break;
+                    case "Watching":
+                        counts.Watching = count;
+                        break;
+                    case "Completed":
+                        counts.Completed = count;
+                        break;
+                }
+            }
+        }
+
+        var items = new List<WatchlistItem>();
+        if (await reader.NextResultAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(MapWatchlistItem(reader));
+            }
+        }
+
+        return new WatchlistPage
+        {
+            Items = items,
+            Page = page,
+            PageSize = pageSize,
+            TotalItems = totalItems,
+            Counts = counts
+        };
     }
 
     private static WatchlistItem MapWatchlistItem(SqlDataReader reader) =>

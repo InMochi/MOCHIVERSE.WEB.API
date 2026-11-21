@@ -12,6 +12,8 @@ namespace MOCHI.VERSE.API.Class;
 /// </summary>
 public sealed class JikanTitleProvider : ITitleProvider
 {
+    private const int JikanPageSize = 10;
+
     private readonly HttpClient _httpClient;
 
     public string Source => "jikan";
@@ -28,19 +30,19 @@ public sealed class JikanTitleProvider : ITitleProvider
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
-    public async Task<List<TitleSearchItem>> SearchAsync(string query, int page = 1, CancellationToken cancellationToken = default)
+    public async Task<ProviderSearchResult> SearchAsync(string query, int page = 1, CancellationToken cancellationToken = default)
     {
-        var url = $"anime?q={Uri.EscapeDataString(query)}&page={page}&limit=10";
+        var url = $"anime?q={Uri.EscapeDataString(query)}&page={page}&limit={JikanPageSize}";
         using var response = await _httpClient.GetAsync(url, cancellationToken);
         response.EnsureSuccessStatusCode();
 
         var payload = await response.Content.ReadFromJsonAsync<JikanSearchResponse>(cancellationToken: cancellationToken);
         if (payload?.Data is null)
         {
-            return [];
+            return new ProviderSearchResult { PageSize = JikanPageSize };
         }
 
-        return payload.Data
+        var items = payload.Data
             .Where(item => item.MalId > 0 && !string.IsNullOrWhiteSpace(item.Title))
             .Select(item => new TitleSearchItem
             {
@@ -53,6 +55,14 @@ public sealed class JikanTitleProvider : ITitleProvider
                 Synopsis = string.IsNullOrWhiteSpace(item.Synopsis) ? null : item.Synopsis
             })
             .ToList();
+
+        return new ProviderSearchResult
+        {
+            Items = items,
+            PageSize = JikanPageSize,
+            TotalItems = payload.Pagination?.Items?.Total ?? items.Count,
+            TotalPages = payload.Pagination?.LastVisiblePage ?? (items.Count > 0 ? 1 : 0)
+        };
     }
 
     public async Task<TitleMetadata?> GetDetailAsync(string externalId, CancellationToken cancellationToken = default)
@@ -76,6 +86,12 @@ public sealed class JikanTitleProvider : ITitleProvider
             return null;
         }
 
+        var genres = item.Genres?
+            .Where(g => !string.IsNullOrWhiteSpace(g.Name))
+            .Select(g => g.Name!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+
         return new TitleMetadata
         {
             Source = Source,
@@ -85,6 +101,7 @@ public sealed class JikanTitleProvider : ITitleProvider
             PosterUrl = TruncateNullable(item.Images?.Jpg?.ImageUrl, 500),
             ReleaseYear = ResolveYear(item),
             Synopsis = string.IsNullOrWhiteSpace(item.Synopsis) ? null : item.Synopsis,
+            Genres = genres,
             CachedAt = DateTime.UtcNow
         };
     }
@@ -99,12 +116,30 @@ public sealed class JikanTitleProvider : ITitleProvider
         value.Length <= maxLength ? value : value[..maxLength];
 
     private static string? TruncateNullable(string? value, int maxLength) =>
-        string.IsNullOrWhiteSpace(value) ? null : Truncate(value, maxLength);
+        string.IsNullOrWhiteSpace(value) ? null : Truncate(value.Trim(), maxLength);
 
     private sealed class JikanSearchResponse
     {
+        [JsonPropertyName("pagination")]
+        public JikanPaginationDto? Pagination { get; set; }
+
         [JsonPropertyName("data")]
         public List<JikanAnimeDto>? Data { get; set; }
+    }
+
+    private sealed class JikanPaginationDto
+    {
+        [JsonPropertyName("last_visible_page")]
+        public int LastVisiblePage { get; set; }
+
+        [JsonPropertyName("items")]
+        public JikanPaginationItemsDto? Items { get; set; }
+    }
+
+    private sealed class JikanPaginationItemsDto
+    {
+        [JsonPropertyName("total")]
+        public int Total { get; set; }
     }
 
     private sealed class JikanDetailResponse
@@ -132,6 +167,9 @@ public sealed class JikanTitleProvider : ITitleProvider
 
         [JsonPropertyName("aired")]
         public JikanAiredDto? Aired { get; set; }
+
+        [JsonPropertyName("genres")]
+        public List<JikanGenreDto>? Genres { get; set; }
     }
 
     private sealed class JikanImagesDto
@@ -162,5 +200,11 @@ public sealed class JikanTitleProvider : ITitleProvider
     {
         [JsonPropertyName("year")]
         public int? Year { get; set; }
+    }
+
+    private sealed class JikanGenreDto
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
     }
 }

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Data.SqlClient;
 using MOCHI.VERSE.API.Class;
 using MOCHI.VERSE.API.Interfaces;
@@ -40,6 +41,8 @@ public sealed class WatchlistController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
+        Response.Headers.CacheControl = "no-store";
+
         var userId = Master.GetUserId(User);
         if (userId is null)
         {
@@ -69,9 +72,9 @@ public sealed class WatchlistController : ControllerBase
 
         try
         {
-            var items = await _watchlistRepository.GetByUserAsync(
+            var data = await _watchlistRepository.GetPageByUserAsync(
                 userId.Value, normalizedStatus, page, pageSize, cancellationToken);
-            return Ok(Master.CreateAPIResponse(true, data: items));
+            return Ok(Master.CreateAPIResponse(true, data: data));
         }
         catch (SqlException ex)
         {
@@ -82,12 +85,15 @@ public sealed class WatchlistController : ControllerBase
     }
 
     [HttpPut("{source}/{id}")]
+    [EnableRateLimiting("write")]
     public async Task<ActionResult<APIResponse>> UpsertWatchlist(
         string source,
         string id,
         [FromBody] UpsertWatchlistRequest request,
         CancellationToken cancellationToken = default)
     {
+        Response.Headers.CacheControl = "no-store";
+
         var userId = Master.GetUserId(User);
         if (userId is null)
         {
@@ -132,11 +138,14 @@ public sealed class WatchlistController : ControllerBase
     }
 
     [HttpDelete("{source}/{id}")]
+    [EnableRateLimiting("write")]
     public async Task<ActionResult<APIResponse>> DeleteWatchlist(
         string source,
         string id,
         CancellationToken cancellationToken = default)
     {
+        Response.Headers.CacheControl = "no-store";
+
         var userId = Master.GetUserId(User);
         if (userId is null)
         {

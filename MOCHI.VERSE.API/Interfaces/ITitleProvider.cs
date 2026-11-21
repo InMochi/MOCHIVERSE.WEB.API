@@ -11,6 +11,6 @@ public interface ITitleProvider
     string MediaType { get; }
     bool IsConfigured { get; }
 
-    Task<List<TitleSearchItem>> SearchAsync(string query, int page = 1, CancellationToken cancellationToken = default);
+    Task<ProviderSearchResult> SearchAsync(string query, int page = 1, CancellationToken cancellationToken = default);
     Task<TitleMetadata?> GetDetailAsync(string externalId, CancellationToken cancellationToken = default);
 }

@@ -55,7 +55,12 @@ public class UserProfile
 
 public class AuthData
 {
-    public string AccessToken { get; set; } = string.Empty;
     public DateTime ExpiresAt { get; set; }
     public UserProfile User { get; set; } = new();
+}
+
+public class CsrfTokenData
+{
+    public string HeaderName { get; set; } = string.Empty;
+    public string RequestToken { get; set; } = string.Empty;
 }

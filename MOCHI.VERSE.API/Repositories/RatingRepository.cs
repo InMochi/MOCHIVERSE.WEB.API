@@ -78,6 +78,32 @@ public sealed class RatingRepository : IRatingRepository
         return affected > 0;
     }
 
+    public async Task<MyTitleRating?> GetUserRatingAsync(
+        int userId,
+        string source,
+        string externalId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = new SqlHelper(_configuration);
+        db.CommandText = """
+            SELECT TOP (1) Id, Score, Review, CreatedAt, UpdatedAt
+            FROM dbo.Ratings
+            WHERE UserId = @UserId AND Source = @Source AND ExternalId = @ExternalId;
+            """;
+        db.AddParameter("@UserId", userId, SqlDbType.Int);
+        db.AddParameter("@Source", source, SqlDbType.VarChar, 20);
+        db.AddParameter("@ExternalId", externalId, SqlDbType.VarChar, 50);
+
+        return await db.QueryFirstOrDefaultAsync(reader => new MyTitleRating
+        {
+            Id = reader.GetInt32(reader.GetOrdinal("Id")),
+            Score = reader.GetByte(reader.GetOrdinal("Score")),
+            Review = reader.IsDBNull(reader.GetOrdinal("Review")) ? null : reader.GetString(reader.GetOrdinal("Review")),
+            CreatedAt = reader.GetDateTime(reader.GetOrdinal("CreatedAt")),
+            UpdatedAt = reader.IsDBNull(reader.GetOrdinal("UpdatedAt")) ? null : reader.GetDateTime(reader.GetOrdinal("UpdatedAt"))
+        }, cancellationToken);
+    }
+
     public async Task<List<RatingItem>> GetByTitleAsync(
         string source,
         string externalId,
