@@ -200,8 +200,8 @@ Semua endpoint list (`titles/search`, `titles/{source}/{id}/ratings`, `me/watchl
 ## 5. Titles Endpoints
 
 Identitas setiap judul menggunakan pasangan `(source, id)`:
-- `source`: `"tmdb"` (film) atau `"jikan"` (anime)
-- `id`: integer positif ID eksternal (misal `603` untuk TMDB atau `1535` untuk Jikan)
+- `source`: `"tmdb"` (film) atau `"anilist"` (anime)
+- `id`: integer positif ID eksternal (misal `603` untuk TMDB atau `1535` untuk AniList)
 
 ### `GET /api/titles/search`
 - **Auth:** Public
@@ -351,12 +351,12 @@ Nilai `status` yang valid: `"PlanToWatch"`, `"Watching"`, `"Completed"`.
       "items": [
         {
           "id": 5,
-          "source": "jikan",
+          "source": "anilist",
           "externalId": "1535",
           "status": "Watching",
           "mediaType": "anime",
           "title": "Death Note",
-          "posterUrl": "https://cdn.myanimelist.net/images/anime/1079/138100.jpg",
+          "posterUrl": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1535-kUgkcrfOrkUM.jpg",
           "releaseYear": 2006,
           "createdAt": "2026-11-22T00:02:00Z",
           "updatedAt": null
